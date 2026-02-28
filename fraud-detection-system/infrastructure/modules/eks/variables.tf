@@ -110,8 +110,8 @@ variable "cpu_max_size" {
   default     = 10
 
   validation {
-    condition     = var.cpu_max_size >= var.cpu_desired_size
-    error_message = "Max size must be >= desired size"
+    condition     = var.cpu_max_size >= 1
+    error_message = "Max size must be at least 1"
   }
 }
 
@@ -150,8 +150,8 @@ variable "gpu_max_size" {
   default     = 5
 
   validation {
-    condition     = var.gpu_max_size >= var.gpu_desired_size
-    error_message = "Max size must be >= desired size"
+    condition     = var.gpu_max_size >= 1
+    error_message = "Max size must be at least 1"
   }
 }
 

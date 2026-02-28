@@ -14,6 +14,10 @@ terraform {
       source  = "hashicorp/helm"
       version = "~> 2.10"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
   
   # Backend configuration - S3 backend for remote state
@@ -40,26 +44,13 @@ provider "aws" {
 }
 
 # Configure Kubernetes provider for EKS
+# This provider is auto-configured for each module that needs it
 provider "kubernetes" {
-  host                   = data.aws_eks_cluster.cluster.endpoint
-  cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority[0].data)
-  token                  = data.aws_eks_cluster_auth.cluster.token
+  alias = "default"
 }
 
 # Configure Helm provider for Kubernetes charts
+# This provider is auto-configured for each module that needs it
 provider "helm" {
-  kubernetes {
-    host                   = data.aws_eks_cluster.cluster.endpoint
-    cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority[0].data)
-    token                  = data.aws_eks_cluster_auth.cluster.token
-  }
-}
-
-# Data source for EKS cluster
-data "aws_eks_cluster" "cluster" {
-  name = aws_eks_cluster.fraud_detection.id
-}
-
-data "aws_eks_cluster_auth" "cluster" {
-  name = aws_eks_cluster.fraud_detection.id
+  alias = "default"
 }

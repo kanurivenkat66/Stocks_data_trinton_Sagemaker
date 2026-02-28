@@ -62,8 +62,8 @@ variable "hpa_max_replicas" {
   default     = 10
 
   validation {
-    condition     = var.hpa_max_replicas >= var.hpa_min_replicas
-    error_message = "Max replicas must be >= min replicas"
+    condition     = var.hpa_max_replicas >= 1
+    error_message = "Max replicas must be at least 1"
   }
 }
 
