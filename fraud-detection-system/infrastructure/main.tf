@@ -232,7 +232,7 @@ module "karpenter" {
 
   project_name                = var.project_name
   cluster_name                = module.eks.cluster_name
-  karpenter_role_arn          = aws_iam_role.karpenter.arn
+  # karpenter_role_arn output removed (no such resource in IAM module)
   karpenter_node_role_name    = module.iam.eks_nodes_role_name
   cpu_instance_types          = var.cpu_instance_types_karpenter
   cpu_pool_max_cpu            = var.cpu_pool_max_cpu
