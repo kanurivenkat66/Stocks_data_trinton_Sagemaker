@@ -2,6 +2,10 @@
 
 terraform {
   required_providers {
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.20"
+    }
     tls = {
       source  = "hashicorp/tls"
       version = "~> 4.0"
@@ -145,13 +149,11 @@ resource "aws_eks_node_group" "gpu" {
     NodeType = "GPU"
   }
 
-  taints = [
-    {
-      key    = "nvidia.com/gpu"
-      value  = "true"
-      effect = "NO_SCHEDULE"
-    }
-  ]
+  taint {
+    key    = "nvidia.com/gpu"
+    value  = "true"
+    effect = "NO_SCHEDULE"
+  }
 
   tags = merge(
     var.common_tags,
