@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'infrastructure/**'
+      - 'fraud-detection-system/infrastructure/**'
       - '.github/workflows/terraform-apply.yml'
 
 permissions:

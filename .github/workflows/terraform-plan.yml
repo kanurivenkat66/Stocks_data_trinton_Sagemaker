@@ -3,7 +3,7 @@ name: Terraform Plan (PR)
 on:
   pull_request:
     paths:
-      - 'infrastructure/**'
+      - 'fraud-detection-system/infrastructure/**'
       - '.github/workflows/terraform-plan.yml'
 
 permissions:
