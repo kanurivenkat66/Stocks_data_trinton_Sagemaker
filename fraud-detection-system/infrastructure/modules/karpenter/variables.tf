@@ -11,8 +11,9 @@ variable "cluster_name" {
 }
 
 variable "karpenter_role_arn" {
-  description = "ARN of the Karpenter IRSA role"
+  description = "ARN of the Karpenter IRSA role. Optional; leave empty if IRSA is managed externally."
   type        = string
+  default     = ""
 }
 
 variable "karpenter_node_role_name" {
