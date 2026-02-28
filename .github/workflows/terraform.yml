@@ -99,7 +99,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
       
       - name: Upload Plan Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: terraform-plan
           path: ${{ env.TERRAFORM_DIR }}/tfplan
@@ -173,7 +173,7 @@ jobs:
           terraform output -json > outputs.json
       
       - name: Upload Apply Output
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: terraform-apply-output
           path: |
@@ -227,7 +227,7 @@ jobs:
           EOF
       
       - name: Upload Summary
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: deployment-summary
           path: deployment-summary.md

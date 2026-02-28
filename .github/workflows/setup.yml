@@ -303,7 +303,7 @@ jobs:
           cat AWS_GITHUB_SETUP.md
       
       - name: Upload setup guide
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: aws-github-setup-guide
           path: AWS_GITHUB_SETUP.md
@@ -384,7 +384,7 @@ jobs:
           cat DEPLOYMENT_CHECKLIST.md
       
       - name: Upload checklist
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: deployment-checklist
           path: DEPLOYMENT_CHECKLIST.md
@@ -498,7 +498,7 @@ jobs:
           cat SAFETY_GATES.md
       
       - name: Upload safety gates
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: safety-gates-config
           path: SAFETY_GATES.md
@@ -688,7 +688,7 @@ jobs:
           cat cicd/GITHUB_ACTIONS_REFERENCE.md
       
       - name: Upload GitHub Actions reference
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: github-actions-reference
           path: cicd/GITHUB_ACTIONS_REFERENCE.md

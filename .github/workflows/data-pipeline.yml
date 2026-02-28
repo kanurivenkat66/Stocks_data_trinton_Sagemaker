@@ -100,7 +100,7 @@ jobs:
           " || echo "Warning: Could not verify data quality"
       
       - name: Upload Data Report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: data-quality-report
           path: fraud-detection-system/data-pipeline/

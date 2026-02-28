@@ -72,7 +72,7 @@ jobs:
           EOFPYTHON
       
       - name: Upload data artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: training-data
           path: ${{ env.DATA_DIR }}/data.csv
@@ -88,7 +88,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Download data
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: training-data
           path: ${{ env.DATA_DIR }}
@@ -133,7 +133,7 @@ jobs:
           EOFPYTHON
       
       - name: Upload preprocessed data
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: preprocessed-data
           path: ${{ env.DATA_DIR }}/processed
@@ -149,7 +149,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Download preprocessed data
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: preprocessed-data
           path: ${{ env.DATA_DIR }}/processed
@@ -205,7 +205,7 @@ jobs:
           EOFPYTHON
       
       - name: Upload model
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: trained-model
           path: ${{ env.TRAINING_DIR }}/weights
@@ -221,7 +221,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Download trained model
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: trained-model
           path: ${{ env.TRAINING_DIR }}/weights
@@ -261,7 +261,7 @@ jobs:
           EOFPYTHON
       
       - name: Upload ONNX model
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: onnx-model
           path: ${{ env.TRAINING_DIR }}/weights/onnx_model
@@ -277,7 +277,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Download ONNX model
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: onnx-model
           path: onnx_model
@@ -512,7 +512,7 @@ jobs:
           cat pipeline-summary.md
       
       - name: Upload pipeline summary
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: pipeline-summary
           path: pipeline-summary.md

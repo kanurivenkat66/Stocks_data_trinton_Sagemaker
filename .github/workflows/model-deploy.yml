@@ -215,7 +215,7 @@ jobs:
           cat /tmp/deployment-summary.md
       
       - name: Upload Deployment Summary
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: deployment-summary
           path: /tmp/deployment-summary.md

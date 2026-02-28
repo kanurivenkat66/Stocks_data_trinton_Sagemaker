@@ -98,7 +98,7 @@ jobs:
             });
       
       - name: Upload Terraform Plan
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ github.event.pull_request.number }}
           path: fraud-detection-system/infrastructure/tfplan

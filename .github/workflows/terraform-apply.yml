@@ -55,7 +55,7 @@ jobs:
         run: terraform show -json tfplan | jq '.' > plan.json
       
       - name: Upload Plan Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: terraform-plan-${{ github.sha }}
           path: fraud-detection-system/infrastructure/
