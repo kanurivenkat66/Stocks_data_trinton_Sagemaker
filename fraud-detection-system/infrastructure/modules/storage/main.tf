@@ -207,6 +207,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "data" {
   rule {
     id     = "archive-old-versions"
     status = "Enabled"
+    filter {}
 
     noncurrent_version_expiration {
       noncurrent_days = var.data_retention_days
@@ -220,6 +221,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "models" {
   rule {
     id     = "keep-versions"
     status = "Enabled"
+    filter {}
 
     noncurrent_version_expiration {
       noncurrent_days = var.model_retention_days
@@ -233,6 +235,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "training_artifacts" {
   rule {
     id     = "archive-old-artifacts"
     status = "Enabled"
+    filter {}
 
     noncurrent_version_expiration {
       noncurrent_days = var.artifacts_retention_days
@@ -246,6 +249,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "logs" {
   rule {
     id     = "expire-logs"
     status = "Enabled"
+    filter {}
 
     expiration {
       days = var.log_retention_days

@@ -1,5 +1,14 @@
 # KServe Module - Model Serving Infrastructure
 
+terraform {
+  required_providers {
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.20"
+    }
+  }
+}
+
 # KServe Namespace
 resource "kubernetes_namespace" "kserve" {
   metadata {

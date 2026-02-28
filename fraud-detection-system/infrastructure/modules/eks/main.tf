@@ -1,5 +1,14 @@
 # EKS Module - Kubernetes Cluster Management
 
+terraform {
+  required_providers {
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+  }
+}
+
 # EKS Cluster
 resource "aws_eks_cluster" "main" {
   name     = "${var.project_name}-cluster"
@@ -136,11 +145,13 @@ resource "aws_eks_node_group" "gpu" {
     NodeType = "GPU"
   }
 
-  taints {
-    key    = "nvidia.com/gpu"
-    value  = "true"
-    effect = "NO_SCHEDULE"
-  }
+  taints = [
+    {
+      key    = "nvidia.com/gpu"
+      value  = "true"
+      effect = "NO_SCHEDULE"
+    }
+  ]
 
   tags = merge(
     var.common_tags,
@@ -162,7 +173,7 @@ resource "aws_eks_addon" "vpc_cni" {
   cluster_name             = aws_eks_cluster.main.name
   addon_name               = "vpc-cni"
   addon_version            = var.vpc_cni_addon_version
-  resolve_conflicts        = "OVERWRITE"
+  resolve_conflicts_on_create = "OVERWRITE"
   service_account_role_arn = var.vpc_cni_role_arn
 
   tags = merge(
@@ -175,10 +186,10 @@ resource "aws_eks_addon" "vpc_cni" {
 
 # EKS Addon - CoreDNS
 resource "aws_eks_addon" "coredns" {
-  cluster_name      = aws_eks_cluster.main.name
-  addon_name        = "coredns"
-  addon_version     = var.coredns_addon_version
-  resolve_conflicts = "OVERWRITE"
+  cluster_name            = aws_eks_cluster.main.name
+  addon_name              = "coredns"
+  addon_version           = var.coredns_addon_version
+  resolve_conflicts_on_create = "OVERWRITE"
 
   tags = merge(
     var.common_tags,
@@ -190,10 +201,10 @@ resource "aws_eks_addon" "coredns" {
 
 # EKS Addon - kube-proxy
 resource "aws_eks_addon" "kube_proxy" {
-  cluster_name      = aws_eks_cluster.main.name
-  addon_name        = "kube-proxy"
-  addon_version     = var.kube_proxy_addon_version
-  resolve_conflicts = "OVERWRITE"
+  cluster_name            = aws_eks_cluster.main.name
+  addon_name              = "kube-proxy"
+  addon_version           = var.kube_proxy_addon_version
+  resolve_conflicts_on_create = "OVERWRITE"
 
   tags = merge(
     var.common_tags,
@@ -208,7 +219,7 @@ resource "aws_eks_addon" "ebs_csi" {
   cluster_name             = aws_eks_cluster.main.name
   addon_name               = "ebs-csi-driver"
   addon_version            = var.ebs_csi_addon_version
-  resolve_conflicts        = "OVERWRITE"
+  resolve_conflicts_on_create = "OVERWRITE"
   service_account_role_arn = var.ebs_csi_role_arn
 
   tags = merge(

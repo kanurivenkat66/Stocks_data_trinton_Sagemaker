@@ -1,5 +1,14 @@
 # Karpenter Module - Autoscaling Configuration
 
+terraform {
+  required_providers {
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.20"
+    }
+  }
+}
+
 # Karpenter Namespace
 resource "kubernetes_namespace" "karpenter" {
   metadata {
