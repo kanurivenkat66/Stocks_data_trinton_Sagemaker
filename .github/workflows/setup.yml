@@ -108,6 +108,8 @@ jobs:
           GITHUB_REPO_NAME="YOUR_REPO_NAME"
           
           # Create trust policy
+          # StringLike with wildcard allows all GitHub Actions triggers:
+          # push, pull_request, workflow_dispatch from any branch/event
           cat > github-trust-policy.json << 'EOFTRUST'
           {
             "Version": "2012-10-17",
@@ -123,7 +125,7 @@ jobs:
                     "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
                   },
                   "StringLike": {
-                    "token.actions.githubusercontent.com:sub": "repo:$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME:ref:refs/heads/main"
+                    "token.actions.githubusercontent.com:sub": "repo:$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME:*"
                   }
                 }
               }
