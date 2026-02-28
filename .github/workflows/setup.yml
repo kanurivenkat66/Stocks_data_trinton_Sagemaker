@@ -159,6 +159,7 @@ jobs:
                   "eks:*",
                   "iam:*",
                   "s3:*",
+                  "dynamodb:*",
                   "logs:*",
                   "autoscaling:*",
                   "elasticloadbalancing:*",
