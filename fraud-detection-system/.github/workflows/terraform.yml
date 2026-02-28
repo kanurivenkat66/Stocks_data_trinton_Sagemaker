@@ -1,0 +1,321 @@
+name: Terraform Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'fraud-detection-system/infrastructure/**'
+      - '.github/workflows/terraform.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'fraud-detection-system/infrastructure/**'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: us-west-2
+  TF_VERSION: 1.5.0
+  TF_LOG: INFO
+  TERRAFORM_DIR: fraud-detection-system/infrastructure
+
+jobs:
+  validation:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Terraform Format Check
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform fmt -check -recursive
+        continue-on-error: true
+      
+      - name: Terraform Validation
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform init -backend=false
+          terraform validate
+  
+  plan:
+    name: Plan Terraform Changes
+    runs-on: ubuntu-latest
+    needs: validation
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Terraform Init
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform init
+      
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform plan -no-color -out=tfplan 2>&1 | tee plan.txt
+          
+          # Extract summary
+          echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          cat plan.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-plan
+          path: ${{ env.TERRAFORM_DIR }}/tfplan
+          retention-days: 5
+      
+      - name: Comment PR with Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('${{ env.TERRAFORM_DIR }}/plan.txt', 'utf8');
+            
+            const comment = `## 📋 Terraform Plan Results
+            
+            \`\`\`
+            ${plan.substring(0, 3000)}${plan.length > 3000 ? '... (truncated)' : ''}
+            \`\`\`
+            
+            **Status**: ✅ Plan succeeded
+            **Action**: Merge this PR to apply changes
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+  
+  apply:
+    name: Apply Terraform Changes
+    runs-on: ubuntu-latest
+    needs: validation
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' || github.event.inputs.action == 'apply'
+    environment: production
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Terraform Init
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform init
+      
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform plan -no-color -out=tfplan
+      
+      - name: Terraform Apply
+        id: apply
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform apply -no-color tfplan 2>&1 | tee apply.txt
+          
+          # Extract outputs
+          terraform output -json > outputs.json
+      
+      - name: Upload Apply Output
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-apply-output
+          path: |
+            ${{ env.TERRAFORM_DIR }}/outputs.json
+            ${{ env.TERRAFORM_DIR }}/apply.txt
+          retention-days: 30
+      
+      - name: Save Deployment Info
+        id: deployment
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          CLUSTER_NAME=$(terraform output -raw eks_cluster_name 2>/dev/null || echo "unknown")
+          DATA_BUCKET=$(terraform output -raw data_bucket_name 2>/dev/null || echo "unknown")
+          MODELS_BUCKET=$(terraform output -raw models_bucket_name 2>/dev/null || echo "unknown")
+          
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+          echo "DATA_BUCKET=$DATA_BUCKET" >> $GITHUB_OUTPUT
+          echo "MODELS_BUCKET=$MODELS_BUCKET" >> $GITHUB_OUTPUT
+      
+      - name: Create Deployment Summary
+        run: |
+          cat > deployment-summary.md << 'EOF'
+          # 🚀 Infrastructure Deployment Summary
+          
+          **Timestamp**: ${{ github.event.head_commit.timestamp }}
+          **Commit**: ${{ github.event.head_commit.message }}
+          **Author**: ${{ github.event.head_commit.author.name }}
+          
+          ## Outputs
+          - **EKS Cluster**: ${{ steps.deployment.outputs.CLUSTER_NAME }}
+          - **Data Bucket**: ${{ steps.deployment.outputs.DATA_BUCKET }}
+          - **Models Bucket**: ${{ steps.deployment.outputs.MODELS_BUCKET }}
+          
+          ## Next Steps
+          1. Configure kubectl: `aws eks update-kubeconfig --region us-west-2 --name ${{ steps.deployment.outputs.CLUSTER_NAME }}`
+          2. Verify deployment: `kubectl get nodes`
+          3. Deploy model: `kubectl apply -f deployment/kserve-predictor.yaml`
+          
+          ## Useful Commands
+          ```bash
+          # View logs
+          kubectl logs -f -n kserve-inference
+          
+          # Check pods
+          kubectl get pods --all-namespaces
+          
+          # View metrics
+          kubectl top nodes
+          kubectl top pods -n kserve-inference
+          ```
+          EOF
+      
+      - name: Upload Summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-summary
+          path: deployment-summary.md
+          retention-days: 30
+      
+      - name: Notify Success
+        if: success()
+        run: |
+          echo "✅ Infrastructure deployment successful!"
+          echo "EKS Cluster: ${{ steps.deployment.outputs.CLUSTER_NAME }}"
+          echo "Data Bucket: ${{ steps.deployment.outputs.DATA_BUCKET }}"
+
+  cost-estimate:
+    name: Estimate Deployment Cost
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Terraform Cost Estimate
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          
+          cat > cost-estimate.md << 'EOF'
+          # 💰 Estimated Monthly Costs
+          
+          | Component | Cost/Month |
+          |-----------|-----------|
+          | EKS Cluster | $50-100 |
+          | EC2 Instances (Spot) | $150-300 |
+          | S3 Storage | $20-50 |
+          | Data Transfer | $20-50 |
+          | CloudWatch Logs | $50-100 |
+          | NAT Gateway | $32-45 |
+          | **Total** | **$322-645** |
+          
+          **Note**: These are estimates for production deployment with autoscaling enabled.
+          Actual costs may vary based on:
+          - Data volume
+          - Number of API requests
+          - Number of nodes running
+          - Data transfer amount
+          
+          Enable AWS Cost Alerts:
+          https://console.aws.amazon.com/billing/home#/preferences
+          EOF
+          
+          cat cost-estimate.md
+      
+      - name: Comment Cost Estimate
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const estimate = fs.readFileSync('${{ env.TERRAFORM_DIR }}/cost-estimate.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: estimate
+            });
+
+  security-scan:
+    name: Security Scan Terraform
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Run Terraform Compliance
+        uses: terraform-compliance/github_action@main
+        with:
+          directory: ${{ env.TERRAFORM_DIR }}
+          framework: cis_aws
+        continue-on-error: true
+      
+      - name: Run TF Security
+        uses: aquasecurity/tfsec-action@v1
+        with:
+          working_directory: ${{ env.TERRAFORM_DIR }}
+        continue-on-error: true

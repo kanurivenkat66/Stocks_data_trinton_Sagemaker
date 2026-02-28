@@ -1,0 +1,518 @@
+name: ML Pipeline - Train & Deploy Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      data_source:
+        description: 'Data source for training'
+        required: true
+        default: 'generate'
+        type: choice
+        options:
+          - generate
+          - s3
+      deploy_model:
+        description: 'Deploy model after training'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly training on Sunday at 2 AM UTC
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-west-2
+  PYTHON_VERSION: '3.10'
+  DATA_DIR: fraud-detection-system/data
+  TRAINING_DIR: fraud-detection-system/training
+  DEPLOYMENT_DIR: fraud-detection-system/deployment
+
+jobs:
+  generate-data:
+    name: Generate Training Data
+    runs-on: ubuntu-latest
+    if: github.event.inputs.data_source == 'generate' || github.event_name == 'schedule'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -q pandas numpy boto3 scikit-learn xgboost
+      
+      - name: Generate sample data
+        run: |
+          cd ${{ env.DATA_DIR }}
+          python generate_sample_data.py \
+            --records 100000 \
+            --fraud_rate 0.05 \
+            --output data.csv
+          
+          echo "Generated data statistics:"
+          python << 'EOFPYTHON'
+          import pandas as pd
+          df = pd.read_csv('data.csv')
+          print(f"Total records: {len(df)}")
+          print(f"Fraud cases: {df['is_fraud'].sum()}")
+          print(f"Fraud rate: {df['is_fraud'].mean():.2%}")
+          print(f"\nFeatures: {list(df.columns)}")
+          EOFPYTHON
+      
+      - name: Upload data artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: training-data
+          path: ${{ env.DATA_DIR }}/data.csv
+          retention-days: 5
+
+  preprocess-data:
+    name: Preprocess Training Data
+    runs-on: ubuntu-latest
+    needs: generate-data
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download data
+        uses: actions/download-artifact@v3
+        with:
+          name: training-data
+          path: ${{ env.DATA_DIR }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -q pandas numpy scikit-learn boto3
+      
+      - name: Run preprocessing
+        run: |
+          cd ${{ env.DATA_DIR }}
+          python data_preprocessing.py \
+            --input data.csv \
+            --output_dir ./processed \
+            --train_ratio 0.7 \
+            --val_ratio 0.15 \
+            --test_ratio 0.15
+          
+          echo "Preprocessing complete. Generated splits:"
+          ls -lh processed/
+      
+      - name: Validate data quality
+        run: |
+          cd ${{ env.DATA_DIR }}
+          python << 'EOFPYTHON'
+          import pandas as pd
+          import os
+          
+          for split in ['train', 'val', 'test']:
+            df = pd.read_csv(f'processed/{split}.csv')
+            print(f"\n{split.upper()} Split:")
+            print(f"  Records: {len(df)}")
+            print(f"  Fraud cases: {df['is_fraud'].sum()}")
+            print(f"  Fraud rate: {df['is_fraud'].mean():.2%}")
+            print(f"  Missing values: {df.isnull().sum().sum()}")
+          EOFPYTHON
+      
+      - name: Upload preprocessed data
+        uses: actions/upload-artifact@v3
+        with:
+          name: preprocessed-data
+          path: ${{ env.DATA_DIR }}/processed
+          retention-days: 5
+
+  train-model:
+    name: Train XGBoost Model
+    runs-on: ubuntu-latest
+    needs: preprocess-data
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download preprocessed data
+        uses: actions/download-artifact@v3
+        with:
+          name: preprocessed-data
+          path: ${{ env.DATA_DIR }}/processed
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -q pandas numpy scikit-learn xgboost boto3 skl2onnx onnx
+      
+      - name: Run training
+        run: |
+          cd ${{ env.TRAINING_DIR }}
+          mkdir -p weights
+          
+          python train.py \
+            --train_data ../${{ env.DATA_DIR }}/processed/train.csv \
+            --val_data ../${{ env.DATA_DIR }}/processed/val.csv \
+            --test_data ../${{ env.DATA_DIR }}/processed/test.csv \
+            --output_dir weights \
+            --epochs 100 \
+            --batch_size 32 \
+            --gpu_enabled false
+          
+          echo "Training complete. Generated artifacts:"
+          ls -lh weights/
+      
+      - name: Validate model metrics
+        run: |
+          cd ${{ env.TRAINING_DIR }}
+          python << 'EOFPYTHON'
+          import json
+          
+          with open('weights/metrics.json', 'r') as f:
+            metrics = json.load(f)
+          
+          print("Model Performance Metrics:")
+          print(f"  AUC: {metrics.get('auc', 'N/A'):.4f}")
+          print(f"  Precision: {metrics.get('precision', 'N/A'):.4f}")
+          print(f"  Recall: {metrics.get('recall', 'N/A'):.4f}")
+          print(f"  F1: {metrics.get('f1', 'N/A'):.4f}")
+          
+          # Check minimum thresholds
+          auc = metrics.get('auc', 0)
+          if auc < 0.75:
+            print("\n⚠️  Warning: AUC below 0.75 threshold")
+          else:
+            print("\n✅ Model meets quality thresholds")
+          EOFPYTHON
+      
+      - name: Upload model
+        uses: actions/upload-artifact@v3
+        with:
+          name: trained-model
+          path: ${{ env.TRAINING_DIR }}/weights
+          retention-days: 30
+
+  export-to-onnx:
+    name: Export Model to ONNX
+    runs-on: ubuntu-latest
+    needs: train-model
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download trained model
+        uses: actions/download-artifact@v3
+        with:
+          name: trained-model
+          path: ${{ env.TRAINING_DIR }}/weights
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -q pandas xgboost skl2onnx onnx onnxruntime boto3
+      
+      - name: Run ONNX export
+        run: |
+          cd ${{ env.TRAINING_DIR }}
+          python export_to_onnx.py \
+            --model_path weights/model.bin \
+            --output_dir weights/onnx_model \
+            --batch_size 32 \
+            --seq_length 5000
+          
+          echo "ONNX export complete:"
+          ls -lh weights/onnx_model/
+      
+      - name: Validate ONNX model
+        run: |
+          cd ${{ env.TRAINING_DIR }}
+          python << 'EOFPYTHON'
+          import onnx
+          
+          model = onnx.load('weights/onnx_model/model.onnx')
+          onnx.checker.check_model(model)
+          print("✅ ONNX model validation passed")
+          print(f"   Model opset: {model.opset_import[0].version}")
+          EOFPYTHON
+      
+      - name: Upload ONNX model
+        uses: actions/upload-artifact@v3
+        with:
+          name: onnx-model
+          path: ${{ env.TRAINING_DIR }}/weights/onnx_model
+          retention-days: 30
+
+  upload-to-s3:
+    name: Upload Model to S3
+    runs-on: ubuntu-latest
+    needs: export-to-onnx
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download ONNX model
+        uses: actions/download-artifact@v3
+        with:
+          name: onnx-model
+          path: onnx_model
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Upload to S3
+        run: |
+          MODEL_VERSION=$(date +%Y%m%d_%H%M%S)
+          MODELS_BUCKET=$(aws s3 ls --recursive | grep -i models | head -1 | awk '{print $NF}' | cut -d'/' -f1)
+          
+          if [ -z "$MODELS_BUCKET" ]; then
+            echo "Error: Could not find models bucket"
+            exit 1
+          fi
+          
+          echo "Uploading model version: $MODEL_VERSION to bucket: $MODELS_BUCKET"
+          
+          aws s3 cp onnx_model/ s3://$MODELS_BUCKET/$MODEL_VERSION/ --recursive
+          
+          echo "✅ Model uploaded successfully"
+          echo "MODEL_VERSION=$MODEL_VERSION" >> $GITHUB_ENV
+          echo "MODELS_BUCKET=$MODELS_BUCKET" >> $GITHUB_ENV
+      
+      - name: Update model registry
+        run: |
+          cat > model-registry.json << EOF
+          {
+            "model_version": "${{ env.MODEL_VERSION }}",
+            "timestamp": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "s3_path": "s3://${{ env.MODELS_BUCKET }}/${{ env.MODEL_VERSION }}/",
+            "status": "ready-for-deployment",
+            "framework": "xgboost_onnx",
+            "input_features": 16,
+            "batch_size": 32
+          }
+          EOF
+          
+          aws s3 cp model-registry.json s3://${{ env.MODELS_BUCKET }}/latest-model.json
+
+  deploy-model:
+    name: Deploy Model to EKS
+    runs-on: ubuntu-latest
+    needs: upload-to-s3
+    if: github.event.inputs.deploy_model == 'true'
+    environment: production
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+      
+      - name: Update kubeconfig
+        run: |
+          CLUSTER_NAME=$(aws eks list-clusters --query 'clusters[0]' --output text)
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name $CLUSTER_NAME
+      
+      - name: Create/Update KServe InferenceService
+        run: |
+          kubectl apply -f ${{ env.DEPLOYMENT_DIR }}/kserve-predictor.yaml
+          
+          echo "Waiting for model to be ready..."
+          kubectl wait --for=condition=ready pod \
+            -l app=fraud-detector \
+            -n kserve-inference \
+            --timeout=300s || true
+      
+      - name: Verify deployment
+        run: |
+          echo "Checking KServe InferenceService status:"
+          kubectl get inferenceservice -n kserve-inference
+          
+          echo -e "\nChecking pod status:"
+          kubectl get pods -n kserve-inference
+          
+          echo -e "\nChecking service endpoints:"
+          kubectl get svc -n kserve-inference
+
+  test-inference:
+    name: Test Model Inference
+    runs-on: ubuntu-latest
+    needs: deploy-model
+    if: github.event.inputs.deploy_model == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+      
+      - name: Update kubeconfig
+        run: |
+          CLUSTER_NAME=$(aws eks list-clusters --query 'clusters[0]' --output text)
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name $CLUSTER_NAME
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -q requests numpy pandas
+      
+      - name: Get inference endpoint
+        run: |
+          ENDPOINT=$(kubectl get svc fraud-detector-service -n kserve-inference -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || echo "localhost")
+          echo "INFERENCE_ENDPOINT=$ENDPOINT" >> $GITHUB_ENV
+      
+      - name: Run inference tests
+        run: |
+          cd ${{ env.DEPLOYMENT_DIR }}
+          python << 'EOFPYTHON'
+          import requests
+          import json
+          import time
+          import sys
+          
+          endpoint = "${{ env.INFERENCE_ENDPOINT }}"
+          if not endpoint or endpoint == "localhost":
+              print("⚠️  Inference service not ready yet. Skipping tests.")
+              sys.exit(0)
+          
+          url = f"http://{endpoint}:8000/v1/models/fraud-detector:predict"
+          
+          # Test data
+          test_payload = {
+              "instances": [
+                  {
+                      "amount": 150.50,
+                      "merchant_id": 1234,
+                      "country": 1,
+                      "device_type": 2,
+                      "transaction_type": 0,
+                      "hour": 14,
+                      "day_of_week": 3,
+                      "log_amount": 5.01,
+                      "amount_squared": 22650.25,
+                      "high_amount": 1,
+                      "unusual_time": 0,
+                      "high_risk_device": 0,
+                      "high_risk_transaction": 0,
+                      "total_risk_factors": 1
+                  }
+              ]
+          }
+          
+          try:
+              response = requests.post(url, json=test_payload, timeout=10)
+              if response.status_code == 200:
+                  result = response.json()
+                  print("✅ Inference test passed")
+                  print(f"   Response: {json.dumps(result, indent=2)}")
+              else:
+                  print(f"❌ Inference test failed: {response.status_code}")
+                  print(f"   Response: {response.text}")
+          except Exception as e:
+              print(f"❌ Error during inference: {e}")
+          EOFPYTHON
+      
+      - name: Run benchmark tests
+        run: |
+          cd ${{ env.DEPLOYMENT_DIR }}
+          python inference_client.py \
+            --endpoint ${{ env.INFERENCE_ENDPOINT }}:8000 \
+            --concurrent_requests 10 \
+            --total_requests 100 \
+            --output benchmark-results.json || true
+
+  pipeline-summary:
+    name: ML Pipeline Summary
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [generate-data, preprocess-data, train-model, export-to-onnx]
+    
+    steps:
+      - name: Check job statuses
+        run: |
+          cat > pipeline-summary.md << 'EOF'
+          # 🤖 ML Pipeline Execution Summary
+          
+          **Pipeline Timestamp**: ${{ github.event.head_commit.timestamp }}
+          **Triggered By**: ${{ github.triggering_actor }}
+          
+          ## Job Status
+          | Job | Status |
+          |-----|--------|
+          | Generate Data | ${{ needs.generate-data.result }} |
+          | Preprocess Data | ${{ needs.preprocess-data.result }} |
+          | Train Model | ${{ needs.train-model.result }} |
+          | Export to ONNX | ${{ needs.export-to-onnx.result }} |
+          
+          ## Artifacts Generated
+          - ✅ Training data (CSV)
+          - ✅ Preprocessed splits (train/val/test)
+          - ✅ Trained XGBoost model
+          - ✅ ONNX model export
+          
+          ## Next Steps
+          1. Review model artifacts in Actions
+          2. Deploy to S3 model registry
+          3. Update KServe InferenceService
+          4. Run inference tests
+          5. Monitor model performance
+          
+          EOF
+          
+          cat pipeline-summary.md
+      
+      - name: Upload pipeline summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: pipeline-summary
+          path: pipeline-summary.md

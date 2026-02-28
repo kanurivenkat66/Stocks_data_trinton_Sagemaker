@@ -1,0 +1,695 @@
+name: CI/CD Setup & Secrets
+
+on:
+  workflow_dispatch:
+    inputs:
+      setup_github_secrets:
+        description: 'Setup GitHub secrets and variables'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-setup:
+    name: Verify CI/CD Setup
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Check required secrets
+        run: |
+          echo "Checking GitHub Secrets..."
+          
+          REQUIRED_SECRETS=(
+            "AWS_ROLE_ARN"
+            "AWS_ACCOUNT_ID"
+          )
+          
+          MISSING_SECRETS=()
+          
+          for secret in "${REQUIRED_SECRETS[@]}"; do
+            if [ -z "$(eval echo \${{ secrets[secret] }})" ]; then
+              MISSING_SECRETS+=("$secret")
+            fi
+          done
+          
+          if [ ${#MISSING_SECRETS[@]} -eq 0 ]; then
+            echo "✅ All required secrets are configured"
+          else
+            echo "❌ Missing secrets:"
+            for secret in "${MISSING_SECRETS[@]}"; do
+              echo "  - $secret"
+            done
+            echo ""
+            echo "Please add the following secrets to your GitHub repository:"
+            echo "  1. Go to Settings → Secrets and variables → Actions"
+            echo "  2. Click 'New repository secret'"
+            echo "  3. Add each missing secret"
+            exit 1
+          fi
+      
+      - name: Verify AWS CLI configuration
+        run: |
+          if ! command -v aws &> /dev/null; then
+            echo "⚠️  AWS CLI not installed"
+            exit 1
+          fi
+          
+          echo "✅ AWS CLI is available"
+          aws --version
+      
+      - name: Verify Terraform configuration
+        run: |
+          if [ ! -f "fraud-detection-system/infrastructure/terraform.tfvars" ]; then
+            echo "⚠️  terraform.tfvars not found"
+            echo "   Run ./fraud-detection-system/infrastructure/setup.sh to generate it"
+            exit 1
+          fi
+          
+          echo "✅ Terraform configuration found"
+      
+      - name: Check GitHub Actions runtime
+        run: |
+          echo "GitHub Actions Runtime Information:"
+          echo "  OS: $(uname -s)"
+          echo "  Python: $(python --version 2>&1)"
+          echo "  Docker: $(docker --version 2>&1)"
+          echo ""
+          echo "✅ CI/CD environment ready"
+
+  generate-setup-guide:
+    name: Generate Setup Instructions
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Create setup documentation
+        run: |
+          cat > AWS_GITHUB_SETUP.md << 'EOF'
+          # AWS GitHub Actions CI/CD Setup Guide
+          
+          ## Prerequisites
+          - AWS Account with appropriate permissions
+          - GitHub Repository access
+          - AWS CLI v2 installed locally
+          
+          ## Step 1: Create AWS IAM Role for GitHub Actions
+          
+          ```bash
+          # Run this in your AWS account to create the role
+          GITHUB_REPO_OWNER="YOUR_GITHUB_USERNAME"
+          GITHUB_REPO_NAME="YOUR_REPO_NAME"
+          
+          # Create trust policy
+          cat > github-trust-policy.json << 'EOFTRUST'
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+                  },
+                  "StringLike": {
+                    "token.actions.githubusercontent.com:sub": "repo:$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME:ref:refs/heads/main"
+                  }
+                }
+              }
+            ]
+          }
+          EOFTRUST
+          
+          # Create the role
+          aws iam create-role \
+            --role-name github-actions-fraud-detection \
+            --assume-role-policy-document file://github-trust-policy.json
+          
+          ROLE_ARN=$(aws iam get-role \
+            --role-name github-actions-fraud-detection \
+            --query 'Role.Arn' \
+            --output text)
+          
+          echo "Created role: $ROLE_ARN"
+          ```
+          
+          ## Step 2: Create IAM Policy for Terraform
+          
+          ```bash
+          # Create policy file
+          cat > terraform-policy.json << 'EOFPOLICY'
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "ec2:*",
+                  "eks:*",
+                  "iam:*",
+                  "s3:*",
+                  "logs:*",
+                  "autoscaling:*",
+                  "elasticloadbalancing:*",
+                  "kms:*"
+                ],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "iam:PassRole"
+                ],
+                "Resource": "arn:aws:iam::*:role/*"
+              }
+            ]
+          }
+          EOFPOLICY
+          
+          # Attach policy to role
+          aws iam put-role-policy \
+            --role-name github-actions-fraud-detection \
+            --policy-name TerraformExecution \
+            --policy-document file://terraform-policy.json
+          ```
+          
+          ## Step 3: Setup OIDC Provider (One-time)
+          
+          ```bash
+          # Get account ID
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          
+          # Create OIDC provider
+          aws iam create-open-id-connect-provider \
+            --url https://token.actions.githubusercontent.com \
+            --client-id-list sts.amazonaws.com \
+            --thumbprint-list $(curl -s https://token.actions.githubusercontent.com/.well-known/openid-configuration | grep -o '"thumbprint":"[^"]*' | head -1 | cut -d'"' -f4)
+          ```
+          
+          ## Step 4: Setup GitHub Secrets
+          
+          1. Go to: Settings → Secrets and variables → Actions
+          2. Create new repository secrets:
+             - **AWS_ROLE_ARN**: `arn:aws:iam::ACCOUNT_ID:role/github-actions-fraud-detection`
+             - **AWS_ACCOUNT_ID**: Your AWS account ID
+             - **AWS_REGION**: `us-west-2`
+          
+          3. Variables (non-secret):
+             - **TF_VERSION**: `1.5.0`
+             - **PYTHON_VERSION**: `3.10`
+          
+          ## Step 5: Configure Terraform Backend
+          
+          ```bash
+          # Create S3 bucket for state
+          aws s3api create-bucket \
+            --bucket fraud-detection-terraform-state-$ACCOUNT_ID \
+            --region us-west-2 \
+            --create-bucket-configuration LocationConstraint=us-west-2
+          
+          # Enable versioning
+          aws s3api put-bucket-versioning \
+            --bucket fraud-detection-terraform-state-$ACCOUNT_ID \
+            --versioning-configuration Status=Enabled
+          
+          # Block public access
+          aws s3api put-public-access-block \
+            --bucket fraud-detection-terraform-state-$ACCOUNT_ID \
+            --public-access-block-configuration \
+              "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+          ```
+          
+          ## Step 6: Update Terraform Backend
+          
+          Update `infrastructure/provider.tf`:
+          
+          ```hcl
+          terraform {
+            backend "s3" {
+              bucket         = "fraud-detection-terraform-state-ACCOUNT_ID"
+              key            = "prod/terraform.tfstate"
+              region         = "us-west-2"
+              encrypt        = true
+              dynamodb_table = "terraform-locks"
+            }
+          }
+          ```
+          
+          ## Step 7: Test CI/CD Pipeline
+          
+          1. Create a new branch: `git checkout -b test/ci-cd`
+          2. Modify infrastructure/variables.tf
+          3. Push: `git push origin test/ci-cd`
+          4. Create Pull Request
+          5. GitHub Actions workflow should trigger automatically
+          6. Review the `terraform plan` output in the PR
+          7. If approved, merge to main to trigger `terraform apply`
+          
+          ## Monitoring CI/CD Execution
+          
+          1. Go to Actions tab in GitHub
+          2. Select the workflow run
+          3. View logs for detailed execution steps
+          4. Download artifacts (terraform plan, deployment summary)
+          
+          ## Troubleshooting
+          
+          ### OIDC Authentication Fails
+          ```bash
+          # Verify OIDC provider exists
+          aws iam list-open-id-connect-providers
+          
+          # Check role trust policy
+          aws iam get-role --role-name github-actions-fraud-detection
+          ```
+          
+          ### Terraform Apply Fails
+          ```bash
+          # Check AWS credentials in GitHub Actions logs
+          # Verify IAM policy has necessary permissions
+          # Check resource quotas in your AWS account
+          ```
+          
+          ### State Lock Issues
+          ```bash
+          # Unlock state if process hangs
+          aws dynamodb delete-item \
+            --table-name terraform-locks \
+            --key '{"LockID":{"S":"fraud-detection-terraform-state/prod/terraform.tfstate"}}'
+          ```
+          
+          ## Security Best Practices
+          
+          1. **Never commit AWS credentials**: Use OIDC federation instead
+          2. **Limit role permissions**: Attach only necessary policies
+          3. **Use environments**: Separate staging and production deployments
+          4. **Review PRs**: Validate terraform plans before merging
+          5. **Enable audit logs**: Monitor GitHub Actions execution
+          6. **Rotate credentials**: Use automatic secret rotation
+          
+          EOF
+          
+          cat AWS_GITHUB_SETUP.md
+      
+      - name: Upload setup guide
+        uses: actions/upload-artifact@v3
+        with:
+          name: aws-github-setup-guide
+          path: AWS_GITHUB_SETUP.md
+          retention-days: 30
+      
+      - name: Create infrastructure deployment checklist
+        run: |
+          cat > DEPLOYMENT_CHECKLIST.md << 'EOF'
+          # Infrastructure Deployment Checklist
+          
+          ## Pre-Deployment
+          - [ ] AWS account credentials configured locally
+          - [ ] GitHub repo secrets configured (AWS_ROLE_ARN, AWS_ACCOUNT_ID)
+          - [ ] OIDC provider created in AWS account
+          - [ ] IAM role with appropriate permissions created
+          - [ ] Terraform state backend configured
+          - [ ] terraform.tfvars generated via setup.sh
+          
+          ## CI/CD Pipeline
+          - [ ] GitHub Actions workflows deployed (.github/workflows/)
+          - [ ] Terraform validation passing
+          - [ ] Security scans (tfsec, terraform-compliance) passing
+          - [ ] Cost estimate reviewed and approved
+          - [ ] Manual approval step configured for production
+          
+          ## Infrastructure Deployment
+          - [ ] VPC and networking resources created
+          - [ ] EKS cluster deployed and accessible
+          - [ ] Node pools configured (CPU and GPU)
+          - [ ] Karpenter installed and operational
+          - [ ] KServe installed and operational
+          - [ ] S3 buckets created with proper permissions
+          - [ ] IAM roles and service accounts configured
+          
+          ## Data Pipeline
+          - [ ] Synthetic data generation script tested
+          - [ ] Data preprocessing pipeline validated
+          - [ ] Train/validation/test splits created
+          - [ ] Data quality checks passed
+          
+          ## Model Training
+          - [ ] XGBoost training script tested locally
+          - [ ] GPU acceleration enabled
+          - [ ] Model metrics validated (AUC > 0.75)
+          - [ ] ONNX export successful
+          - [ ] Model uploaded to S3
+          
+          ## Model Deployment
+          - [ ] KServe InferenceService deployed
+          - [ ] Model pods running and healthy
+          - [ ] Inference endpoint responding
+          - [ ] Load balancer configured
+          - [ ] Autoscaling policies active
+          
+          ## Monitoring & Observability
+          - [ ] CloudWatch logs configured
+          - [ ] Prometheus scraping metrics
+          - [ ] Grafana dashboards deployed
+          - [ ] Alert rules configured
+          - [ ] Budget alerts enabled
+          
+          ## Testing & Validation
+          - [ ] Inference latency < 100ms p99
+          - [ ] Throughput > 2000 RPS
+          - [ ] Error rate < 0.1%
+          - [ ] Model accuracy validated
+          - [ ] Autoscaling working correctly
+          
+          ## Post-Deployment
+          - [ ] Documentation updated
+          - [ ] Team trained on operations
+          - [ ] Backup and disaster recovery plan
+          - [ ] Cost tracking enabled
+          - [ ] Support runbooks created
+          
+          EOF
+          
+          cat DEPLOYMENT_CHECKLIST.md
+      
+      - name: Upload checklist
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-checklist
+          path: DEPLOYMENT_CHECKLIST.md
+          retention-days: 30
+
+  safety-gates:
+    name: Safety Gates Configuration
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Create production environment protection rules
+        run: |
+          cat > SAFETY_GATES.md << 'EOF'
+          # Safety Gates & Approval Workflows
+          
+          ## Environment Protection
+          
+          ### Production Environment Requirements
+          - [ ] Code review required (minimum 1 approver)
+          - [ ] Status checks must pass (terraform validation, security scans)
+          - [ ] Manual approval required (repository owner or admin)
+          - [ ] Deployment history available for rollback
+          
+          ## Deployment Approval Process
+          
+          1. **Create Pull Request**
+             ```bash
+             git checkout -b infrastructure/feature-name
+             # Make changes to infrastructure/
+             git push origin infrastructure/feature-name
+             ```
+          
+          2. **Terraform Plan Review**
+             - GitHub Actions automatically runs `terraform plan`
+             - Displays resource changes in PR comment
+             - Cost estimation included
+          
+          3. **Code Review**
+             - At least 1 team member reviews changes
+             - Security scan results verified
+             - Cost impact discussed and approved
+          
+          4. **Manual Approval**
+             - Repository admin approves deployment
+             - Confirmation of change management process
+          
+          5. **Merge to Main**
+             - Terraform apply automatically triggered
+             - CloudFormation/Infrastructure updates executed
+             - Deployment summary posted to PR
+          
+          ## Rollback Procedures
+          
+          ### Automatic Rollback
+          - If `terraform apply` fails, state remains unchanged
+          - No resources created/modified on failure
+          - Error logs saved to artifacts
+          
+          ### Manual Rollback
+          ```bash
+          # List previous state versions
+          aws s3api list-object-versions \
+            --bucket fraud-detection-terraform-state-ACCOUNT_ID \
+            --prefix prod/terraform.tfstate
+          
+          # Revert to previous version
+          aws s3api get-object \
+            --bucket fraud-detection-terraform-state-ACCOUNT_ID \
+            --key prod/terraform.tfstate \
+            --version-id VERSION_ID \
+            terraform.tfstate.backup
+          
+          # Restore previous state
+          terraform state push terraform.tfstate.backup
+          terraform destroy (optional, to rollback changes)
+          ```
+          
+          ## Monitoring Deployments
+          
+          ### Real-time Monitoring
+          - CloudWatch Insights: Track deployment progress
+          - EKS: Monitor cluster state during updates
+          - Karpenter: Track node scaling events
+          
+          ### Post-Deployment Validation
+          - Verify all resources created successfully
+          - Check cluster health and node status
+          - Validate network connectivity
+          - Test model inference endpoint
+          
+          ## Failure Handling
+          
+          ### Terraform Plan Fails
+          1. Check error messages in GitHub Actions logs
+          2. Fix configuration issues
+          3. Re-push to trigger validation
+          
+          ### Terraform Apply Fails
+          1. Check CloudWatch logs for error context
+          2. Determine if rollback needed
+          3. Manual intervention in AWS console if critical
+          4. Notify team members
+          
+          ### Resource Quota Exceeded
+          1. Request AWS quota increase
+          2. Adjust `variables.tf` to reduce resource count
+          3. Rerun deployment after quota increase
+          
+          EOF
+          
+          cat SAFETY_GATES.md
+      
+      - name: Upload safety gates
+        uses: actions/upload-artifact@v3
+        with:
+          name: safety-gates-config
+          path: SAFETY_GATES.md
+          retention-days: 30
+
+  documentation:
+    name: Generate CI/CD Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Create CI/CD commands reference
+        run: |
+          cat > cicd/GITHUB_ACTIONS_REFERENCE.md << 'EOF'
+          # GitHub Actions CI/CD Reference
+          
+          ## Workflow Files
+          
+          ### terraform.yml
+          **Purpose**: Validate and deploy infrastructure
+          **Triggered On**:
+          - PR to main branch (terraform plan)
+          - Merge to main branch (terraform apply)
+          - Manual trigger (workflow_dispatch)
+          
+          **Key Jobs**:
+          - `validation`: Format and syntax checks
+          - `plan`: Generate terraform plan
+          - `apply`: Apply terraform changes
+          - `cost-estimate`: Calculate monthly cost
+          - `security-scan`: Run tfsec and terraform-compliance
+          
+          **Artifacts**:
+          - `terraform-plan`: Binary terraform plan file
+          - `terraform-apply-output`: Deployment results
+          - `deployment-summary`: Human-readable summary
+          
+          ### ml-pipeline.yml
+          **Purpose**: Train and deploy ML model
+          **Triggered On**:
+          - Manual trigger (workflow_dispatch)
+          - Weekly schedule (Sunday 2 AM UTC)
+          
+          **Key Jobs**:
+          - `generate-data`: Create synthetic training data
+          - `preprocess-data`: Feature engineering and splitting
+          - `train-model`: XGBoost training
+          - `export-to-onnx`: Convert to ONNX format
+          - `upload-to-s3`: Push model to S3
+          - `deploy-model`: Update KServe service
+          - `test-inference`: Validate model predictions
+          
+          **Artifacts**:
+          - `training-data`: Raw CSV data
+          - `preprocessed-data`: Train/val/test splits
+          - `trained-model`: XGBoost model binary
+          - `onnx-model`: ONNX format model
+          
+          ## Manual Workflow Triggers
+          
+          ### Deploy Infrastructure
+          ```bash
+          # Trigger terraform plan
+          gh workflow run terraform.yml \
+            --ref main \
+            -f action=plan
+          
+          # Trigger terraform apply (requires approval)
+          gh workflow run terraform.yml \
+            --ref main \
+            -f action=apply
+          
+          # Trigger destroy (be careful!)
+          gh workflow run terraform.yml \
+            --ref main \
+            -f action=destroy
+          ```
+          
+          ### Train and Deploy Model
+          ```bash
+          # Generate new data and train
+          gh workflow run ml-pipeline.yml \
+            --ref main \
+            -f data_source=generate \
+            -f deploy_model=false
+          
+          # Use existing S3 data
+          gh workflow run ml-pipeline.yml \
+            --ref main \
+            -f data_source=s3 \
+            -f deploy_model=false
+          
+          # Full pipeline with deployment
+          gh workflow run ml-pipeline.yml \
+            --ref main \
+            -f data_source=generate \
+            -f deploy_model=true
+          ```
+          
+          ## Viewing Results
+          
+          ### Via GitHub Web UI
+          1. Go to Actions tab
+          2. Select workflow run
+          3. Click job to view logs
+          4. Download artifacts if needed
+          
+          ### Via GitHub CLI
+          ```bash
+          # List recent runs
+          gh run list --workflow terraform.yml
+          
+          # View specific run
+          gh run view RUN_ID
+          
+          # Download artifacts
+          gh run download RUN_ID -D artifacts/
+          
+          # Follow run in real-time
+          gh run watch RUN_ID
+          ```
+          
+          ### Via AWS
+          ```bash
+          # View CloudFormation stack events
+          aws cloudformation describe-stack-events \
+            --stack-name fraud-detection-eks-stack
+          
+          # Monitor EKS cluster
+          aws eks describe-cluster \
+            --name fraud-detection-cluster
+          
+          # Check S3 for artifacts
+          aws s3 ls s3://fraud-detection-models/
+          ```
+          
+          ## Debugging Workflow Issues
+          
+          ### Enable Debug Logging
+          ```bash
+          # Set debug secret in repository
+          ACTIONS_STEP_DEBUG=true
+          
+          # Add to workflow step
+          env:
+            ACTIONS_STEP_DEBUG: true
+          ```
+          
+          ### Check Logs
+          ```bash
+          # View full workflow logs
+          gh run view RUN_ID --log
+          
+          # Save to file
+          gh run view RUN_ID --log > workflow.log
+          ```
+          
+          ### Test Workflow Locally
+          ```bash
+          # Install act (runs GitHub Actions locally)
+          brew install act
+          
+          # Run workflow
+          act -j validation
+          act -j plan -s AWS_ROLE_ARN="arn:aws:iam::..."
+          ```
+          
+          ## Workflow Status Badges
+          
+          Add to your README.md:
+          ```markdown
+          ![Terraform Status](https://github.com/OWNER/REPO/actions/workflows/terraform.yml/badge.svg)
+          ![ML Pipeline Status](https://github.com/OWNER/REPO/actions/workflows/ml-pipeline.yml/badge.svg)
+          ```
+          
+          ## Common Issues & Solutions
+          
+          | Issue | Cause | Solution |
+          |-------|-------|----------|
+          | OIDC auth fails | Missing OIDC provider | Create OIDC provider for token.actions.githubusercontent.com |
+          | Terraform plan hangs | State lock | Check DynamoDB lock table, delete stale locks |
+          | Test inference fails | Service not ready | Wait 2-3 mins for KServe pod to fully initialize |
+          | Secret not found | Wrong secret name | Verify case-sensitive secret names in GitHub Settings |
+          | S3 403 Access Denied | IAM permissions | Check role policy includes S3 permissions |
+          
+          EOF
+          
+          cat cicd/GITHUB_ACTIONS_REFERENCE.md
+      
+      - name: Upload GitHub Actions reference
+        uses: actions/upload-artifact@v3
+        with:
+          name: github-actions-reference
+          path: cicd/GITHUB_ACTIONS_REFERENCE.md
+          retention-days: 30

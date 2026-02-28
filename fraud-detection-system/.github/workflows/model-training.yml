@@ -1,0 +1,198 @@
+name: Model Training & Export
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_type:
+        description: 'Model type (xgboost, lightgbm)'
+        required: false
+        default: 'xgboost'
+      max_depth:
+        description: 'Max depth for tree-based models'
+        required: false
+        default: '8'
+      learning_rate:
+        description: 'Learning rate'
+        required: false
+        default: '0.1'
+  schedule:
+    - cron: '0 4 * * 0'  # Weekly on Sunday at 4 AM UTC
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: "us-west-2"
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  train-model:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Get S3 Buckets
+        id: buckets
+        run: |
+          DATA_BUCKET=$(aws s3 ls | grep fraud-detection-data | awk '{print $3}')
+          MODEL_BUCKET=$(aws s3 ls | grep fraud-detection-models | awk '{print $3}')
+          echo "data_bucket=$DATA_BUCKET" >> $GITHUB_OUTPUT
+          echo "model_bucket=$MODEL_BUCKET" >> $GITHUB_OUTPUT
+      
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-training-${{ hashFiles('fraud-detection-system/training/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-training-
+      
+      - name: Install dependencies
+        run: |
+          cd fraud-detection-system/training
+          pip install --upgrade pip
+          pip install -r requirements.txt 2>/dev/null || \
+          pip install xgboost lightgbm scikit-learn pandas numpy boto3 mlflow
+      
+      - name: Check Training Data
+        id: data-check
+        run: |
+          cd fraud-detection-system/training
+          python -c "
+          import boto3
+          s3 = boto3.client('s3')
+          try:
+              response = s3.head_object(
+                  Bucket='${{ steps.buckets.outputs.data_bucket }}',
+                  Key='training-data/train.csv'
+              )
+              print('✓ Training data found')
+          except:
+              print('⚠️  Training data not found. Generate it first with data-pipeline workflow')
+              exit(1)
+          "
+      
+      - name: Train Model
+        id: train
+        run: |
+          cd fraud-detection-system/training
+          python train.py \
+            --train-data s3://${{ steps.buckets.outputs.data_bucket }}/training-data/train.csv \
+            --val-data s3://${{ steps.buckets.outputs.data_bucket }}/training-data/validation.csv \
+            --test-data s3://${{ steps.buckets.outputs.data_bucket }}/training-data/test.csv \
+            --model-type ${{ github.event.inputs.model_type || 'xgboost' }} \
+            --max-depth ${{ github.event.inputs.max_depth || '8' }} \
+            --learning-rate ${{ github.event.inputs.learning_rate || '0.1' }} \
+            --output-path ./model
+          
+          # Extract model metrics
+          echo "model_path=./model/model.bin" >> $GITHUB_OUTPUT
+      
+      - name: Export to ONNX
+        id: export
+        run: |
+          cd fraud-detection-system/training
+          python export_to_onnx.py \
+            --model-path ./model/model.bin \
+            --features-path ./model/features.json \
+            --output-path ./model/model.onnx
+          
+          # Get model info
+          ls -lh ./model/model.onnx
+      
+      - name: Create Model Version
+        id: version
+        run: |
+          VERSION=$(date +%Y%m%d-%H%M%S)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Model version: $VERSION"
+      
+      - name: Upload Model to S3
+        run: |
+          cd fraud-detection-system/training
+          
+          # Create versioned directory
+          aws s3 cp model/model.onnx \
+            s3://${{ steps.buckets.outputs.model_bucket }}/fraud-detector/${{ steps.version.outputs.version }}/model.onnx
+          
+          # Keep latest version
+          aws s3 cp model/model.onnx \
+            s3://${{ steps.buckets.outputs.model_bucket }}/fraud-detector/latest/model.onnx
+          
+          # Copy model config
+          aws s3 cp model/features.json \
+            s3://${{ steps.buckets.outputs.model_bucket }}/fraud-detector/${{ steps.version.outputs.version }}/config.json \
+            2>/dev/null || echo "No config file"
+      
+      - name: Update Model Registry
+        run: |
+          cd fraud-detection-system/training
+          python -c "
+          import json
+          import boto3
+          from datetime import datetime
+          
+          model_registry = {
+              'version': '${{ steps.version.outputs.version }}',
+              'timestamp': datetime.now().isoformat(),
+              'model_type': '${{ github.event.inputs.model_type || 'xgboost' }}',
+              'hyperparameters': {
+                  'max_depth': ${{ github.event.inputs.max_depth || 8 }},
+                  'learning_rate': ${{ github.event.inputs.learning_rate || 0.1 }}
+              },
+              'location': 's3://${{ steps.buckets.outputs.model_bucket }}/fraud-detector/${{ steps.version.outputs.version }}/',
+              'commit': '${{ github.sha }}',
+              'author': '${{ github.actor }}'
+          }
+          
+          s3 = boto3.client('s3')
+          s3.put_object(
+              Bucket='${{ steps.buckets.outputs.model_bucket }}',
+              Key='fraud-detector/${{ steps.version.outputs.version }}/metadata.json',
+              Body=json.dumps(model_registry, indent=2),
+              ContentType='application/json'
+          )
+          
+          print('✓ Model metadata registered')
+          " || echo "Warning: Could not update model registry"
+      
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: trained-model-${{ steps.version.outputs.version }}
+          path: fraud-detection-system/training/model/
+          retention-days: 30
+      
+      - name: Slack Notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '✅' || '❌' }} Model Training",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ job.status == 'success' && '✅' || '❌' }} *Model Training ${{ job.status }}*\n*Version*: ${{ steps.version.outputs.version }}\n*Type*: ${{ github.event.inputs.model_type || 'xgboost' }}\n*Commit*: `${{ github.sha }}`"
+                  }
+                }
+              ]
+            }
+        continue-on-error: true

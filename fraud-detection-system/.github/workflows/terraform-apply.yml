@@ -1,0 +1,125 @@
+name: Terraform Apply (Main)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'infrastructure/**'
+      - '.github/workflows/terraform-apply.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TERRAFORM_VERSION: "1.5.0"
+  AWS_REGION: "us-west-2"
+
+jobs:
+  terraform-apply:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: fraud-detection-system/infrastructure
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      
+      - name: Terraform Init
+        id: init
+        run: terraform init -input=false
+      
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+      
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -input=false -out=tfplan
+      
+      - name: Show Plan Summary
+        run: terraform show -json tfplan | jq '.' > plan.json
+      
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-plan-${{ github.sha }}
+          path: fraud-detection-system/infrastructure/
+          retention-days: 30
+      
+      - name: Verify Plan
+        id: verify
+        run: |
+          RESOURCE_COUNT=$(jq '.resource_changes | length' plan.json)
+          echo "resource_count=$RESOURCE_COUNT" >> $GITHUB_OUTPUT
+          echo "Planning to create/modify $RESOURCE_COUNT resources"
+      
+      - name: Terraform Apply
+        id: apply
+        run: terraform apply -input=false tfplan
+        continue-on-error: true
+      
+      - name: Get Outputs
+        id: outputs
+        run: |
+          echo "cluster_name=$(terraform output -raw eks_cluster_name)" >> $GITHUB_OUTPUT
+          echo "data_bucket=$(terraform output -raw data_bucket_name)" >> $GITHUB_OUTPUT
+          echo "models_bucket=$(terraform output -raw models_bucket_name)" >> $GITHUB_OUTPUT
+      
+      - name: Slack Notification Success
+        if: success()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "🎉 Terraform Apply Successful!",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "✅ *Fraud Detection Infrastructure Deployed*\n*Cluster*: ${{ steps.outputs.outputs.cluster_name }}\n*Commit*: ${{ github.sha }}\n*Author*: ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+        continue-on-error: true
+      
+      - name: Slack Notification Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "❌ Terraform Apply Failed!",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "⚠️ *Infrastructure Deployment Failed*\n*Commit*: ${{ github.sha }}\n*Author*: ${{ github.actor }}\n*See logs for details*"
+                  }
+                }
+              ]
+            }
+        continue-on-error: true
+      
+      - name: Exit on Apply Failure
+        if: steps.apply.outcome == 'failure'
+        run: exit 1

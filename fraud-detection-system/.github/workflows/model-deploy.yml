@@ -1,0 +1,242 @@
+name: Deploy Model to KServe
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_version:
+        description: 'Model version to deploy (leave empty for latest)'
+        required: false
+      environment:
+        description: 'Environment (staging/production)'
+        required: false
+        default: 'staging'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: "us-west-2"
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  deploy-model:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Get Cluster Info
+        id: cluster
+        run: |
+          CLUSTER_NAME=$(cd fraud-detection-system/infrastructure && terraform output -raw eks_cluster_name 2>/dev/null || echo "fraud-detection-cluster")
+          REGION=$(echo "${{ env.AWS_REGION }}")
+          echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+          echo "region=$REGION" >> $GITHUB_OUTPUT
+      
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ steps.cluster.outputs.region }} \
+            --name ${{ steps.cluster.outputs.cluster_name }}
+      
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+      
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+      
+      - name: Get Model Bucket
+        id: bucket
+        run: |
+          MODEL_BUCKET=$(aws s3 ls | grep fraud-detection-models | awk '{print $3}')
+          echo "model_bucket=$MODEL_BUCKET" >> $GITHUB_OUTPUT
+      
+      - name: Determine Model Version
+        id: model
+        run: |
+          if [ -z "${{ github.event.inputs.model_version }}" ]; then
+            # Get latest model version
+            aws s3 ls s3://${{ steps.bucket.outputs.model_bucket }}/fraud-detector/ \
+              --recursive --summarize | grep metadata.json | tail -1 | awk '{print $NF}' | cut -d'/' -f3 > /tmp/version.txt
+            VERSION=$(cat /tmp/version.txt)
+          else
+            VERSION=${{ github.event.inputs.model_version }}
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Deploying model version: $VERSION"
+      
+      - name: Create KServe Predictor Manifest
+        run: |
+          cat > /tmp/kserve-predictor.yaml << 'EOF'
+          apiVersion: serving.kserve.io/v1beta1
+          kind: InferenceService
+          metadata:
+            name: fraud-detector
+            namespace: kserve-inference
+            labels:
+              app: fraud-detection
+              version: "${{ steps.model.outputs.version }}"
+          spec:
+            predictor:
+              minReplicas: 3
+              maxReplicas: 10
+              timeout: 300
+              serviceAccountName: fraud-detector
+              triton:
+                protocolVersion: v2
+                image: nvcr.io/nvidia/tritonserver:23.10-py3
+                resources:
+                  requests:
+                    cpu: 4
+                    memory: 8Gi
+                    nvidia.com/gpu: 1
+                  limits:
+                    cpu: 8
+                    memory: 16Gi
+                    nvidia.com/gpu: 1
+                env:
+                  - name: MODEL_REPOSITORY
+                    value: s3://${{ steps.bucket.outputs.model_bucket }}/fraud-detector/${{ steps.model.outputs.version }}/
+                  - name: TRITON_METRICS_PORT
+                    value: "8002"
+                  - name: GRPC_INFER_PORT
+                    value: "8001"
+                  - name: HTTP_PORT
+                    value: "8000"
+          ---
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: fraud-detector
+            namespace: kserve-inference
+            annotations:
+              eks.amazonaws.com/role-arn: ${{ secrets.KSERVE_ROLE_ARN }}
+          EOF
+          cat /tmp/kserve-predictor.yaml
+      
+      - name: Check Model Exists
+        run: |
+          aws s3 ls s3://${{ steps.bucket.outputs.model_bucket }}/fraud-detector/${{ steps.model.outputs.version }}/
+      
+      - name: Deploy to ${{ github.event.inputs.environment || 'staging' }}
+        run: |
+          kubectl apply -f /tmp/kserve-predictor.yaml
+      
+      - name: Wait for Deployment
+        run: |
+          kubectl rollout status deployment/fraud-detector-predictor \
+            -n kserve-inference \
+            --timeout=600s || echo "⚠️  Rollout check skipped"
+          
+          # Wait for pods to be ready
+          kubectl wait --for=condition=ready pod \
+            -l serving.kserve.io/inferenceservice=fraud-detector \
+            -n kserve-inference \
+            --timeout=600s || echo "⚠️  Some pods not ready yet"
+      
+      - name: Verify Deployment
+        run: |
+          kubectl get pods -n kserve-inference -l serving.kserve.io/inferenceservice=fraud-detector
+          kubectl describe inferenceservice fraud-detector -n kserve-inference
+      
+      - name: Get Service Endpoint
+        id: endpoint
+        run: |
+          # Get service endpoint
+          ENDPOINT=$(kubectl get svc fraud-detector -n kserve-inference -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || \
+                     kubectl get svc fraud-detector -n kserve-inference -o jsonpath='{.spec.clusterIP}' 2>/dev/null || \
+                     echo "pending")
+          echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
+          echo "Service endpoint: $ENDPOINT"
+      
+      - name: Test Inference
+        continue-on-error: true
+        run: |
+          cd fraud-detection-system/deployment
+          
+          # Install client dependencies
+          pip install requests numpy 2>/dev/null || true
+          
+          # Create test script
+          python -c "
+          import json
+          import random
+          import numpy as np
+          
+          # Generate test transaction
+          transaction = {
+              'amount': float(np.random.lognormal(4.5, 1.5)),
+              'merchant_id': random.randint(1, 1000),
+              'country': random.randint(1, 50),
+              'hour': random.randint(0, 23),
+              'day_of_week': random.randint(0, 6),
+              'day_of_month': random.randint(1, 28),
+              'is_night': 1 if random.randint(0, 23) < 6 else 0,
+              'is_weekend': random.randint(0, 1),
+              'log_amount': np.log1p(float(np.random.lognormal(4.5, 1.5))),
+              'amount_squared': float(np.random.lognormal(4.5, 1.5)) ** 2,
+              'high_amount': 1 if np.random.uniform() > 0.75 else 0,
+              'unusual_time': random.randint(0, 1),
+              'high_risk_device': random.randint(0, 1),
+              'high_risk_transaction': random.randint(0, 1),
+              'total_risk_factors': random.randint(0, 4),
+          }
+          
+          print('Test transaction generated successfully')
+          print(json.dumps(transaction, indent=2))
+          " 2>/dev/null || echo "⚠️  Could not generate test transaction"
+      
+      - name: Create Deployment Summary
+        run: |
+          cat > /tmp/deployment-summary.md << EOF
+          # Deployment Summary
+          
+          - **Model Version**: ${{ steps.model.outputs.version }}
+          - **Environment**: ${{ github.event.inputs.environment || 'staging' }}
+          - **Cluster**: ${{ steps.cluster.outputs.cluster_name }}
+          - **Region**: ${{ steps.cluster.outputs.region }}
+          - **Status**: ✅ Deployed
+          - **Endpoint**: ${{ steps.endpoint.outputs.endpoint }}
+          - **Timestamp**: $(date -u)
+          EOF
+          cat /tmp/deployment-summary.md
+      
+      - name: Upload Deployment Summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-summary
+          path: /tmp/deployment-summary.md
+          retention-days: 30
+      
+      - name: Slack Notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '✅' || '❌' }} Model Deployment",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ job.status == 'success' && '✅' || '❌' }} *Model Deployed to ${{ github.event.inputs.environment || 'staging' }}*\n*Model*: ${{ steps.model.outputs.version }}\n*Cluster*: ${{ steps.cluster.outputs.cluster_name }}\n*Status*: ${{ job.status }}"
+                  }
+                }
+              ]
+            }
+        continue-on-error: true

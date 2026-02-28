@@ -1,0 +1,109 @@
+name: Terraform Plan (PR)
+
+on:
+  pull_request:
+    paths:
+      - 'infrastructure/**'
+      - '.github/workflows/terraform-plan.yml'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  TERRAFORM_VERSION: "1.5.0"
+  AWS_REGION: "us-west-2"
+
+jobs:
+  terraform-plan:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: fraud-detection-system/infrastructure
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+      
+      - name: Terraform Init
+        id: init
+        run: terraform init -input=false
+      
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+      
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -no-color -input=false -out=tfplan
+          terraform show -json tfplan > plan.json
+      
+      - name: Terraform TFLint
+        uses: terraform-linters/setup-tflint@v3
+        continue-on-error: true
+        with:
+          tflint_version: latest
+      
+      - name: TFLint Initialization
+        continue-on-error: true
+        run: tflint --init
+      
+      - name: TFLint Run
+        continue-on-error: true
+        run: tflint -f compact
+      
+      - name: Comment PR with Plan
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('fraud-detection-system/infrastructure/tfplan', 'utf-8');
+            
+            const output = `## Terraform Plan
+            
+            \`\`\`hcl
+            ${plan.substring(0, 3000)}
+            ${plan.length > 3000 ? '\n... (truncated)\n' : ''}
+            \`\`\`
+            
+            ### Terraform Format: ${{ steps.fmt.outcome }}
+            ### Terraform Validation: ${{ steps.validate.outcome }}
+            ### Terraform Plan: ${{ steps.plan.outcome }}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+      
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v3
+        with:
+          name: tfplan-${{ github.event.pull_request.number }}
+          path: fraud-detection-system/infrastructure/tfplan
+          retention-days: 7
+      
+      - name: Check Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1

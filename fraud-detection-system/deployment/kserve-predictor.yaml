@@ -1,0 +1,318 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: fraud-detector
+  namespace: kserve-inference
+  labels:
+    app: fraud-detector
+    version: v1
+  annotations:
+    # Enable canary rollout
+    serving.kserve.io/deploymentMode: "Serverless"
+spec:
+  # Canary rollout configuration
+  canaryTraffic:
+    trafficPercent: 0
+    
+  predictor:
+    # Min/max replicas
+    minReplicas: 3
+    maxReplicas: 20
+    
+    # Resource requests - crucial for proper scheduling
+    containerSpec:
+      resources:
+        requests:
+          cpu: "4"
+          memory: "8Gi"
+          nvidia.com/gpu: "1"
+        limits:
+          cpu: "8"
+          memory: "16Gi"
+          nvidia.com/gpu: "1"
+    
+    # Triton predictor
+    triton:
+      # Model control plane
+      storageUri: s3://fraud-detection-models/v1/
+      
+      # Runtime settings
+      command: ["tritonserver"]
+      args:
+        - "--model-repository=/mnt/models"
+        - "--model-control-mode=explicit"
+        - "--allow-metrics=true"
+        - "--allow-gpu-metrics=true"
+        - "--enable-audit-log=true"
+      
+      # Environment variables
+      env:
+        - name: LD_LIBRARY_PATH
+          value: /opt/tritonserver/lib
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+      
+      # Pod priority for critical inference service
+      affinity:
+        # Prefer nodes with GPUs
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node.kubernetes.io/instance-type
+                    operator: In
+                    values:
+                      - "g4dn.xlarge"
+                      - "g4dn.2xlarge"
+                      - "p3.2xlarge"
+        
+        # Spread replicas across nodes
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - fraud-detector
+                topologyKey: kubernetes.io/hostname
+      
+      # Health checks
+      livenessProbe:
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+        httpGet:
+          path: /v2/health/live
+          port: 8000
+      
+      readinessProbe:
+        initialDelaySeconds: 20
+        periodSeconds: 5
+        timeoutSeconds: 3
+        failureThreshold: 2
+        httpGet:
+          path: /v2/health/ready
+          port: 8000
+      
+      # Graceful shutdown
+      lifecycle:
+        preStop:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - sleep 30
+  
+  # Traffic management
+  traffic:
+    - canary: fraud-detector
+      percent: 0
+    - latest: fraud-detector
+      percent: 100
+  
+  # Service account with proper permissions
+  serviceAccountName: fraud-detector-sa
+
+---
+apiVersion: autoscaling.knative.dev/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: fraud-detector-pa
+  namespace: kserve-inference
+spec:
+  scaleTargetRef:
+    name: fraud-detector
+  minScale: 3
+  maxScale: 20
+  
+  # Metric-based scaling
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  
+  # RPS-based scaling
+  scaleDownBehavior:
+    stabilizationWindowSeconds: 120
+    policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+  
+  scaleUpBehavior:
+    stabilizationWindowSeconds: 30
+    policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 2
+        periodSeconds: 30
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: fraud-detector-pdb
+  namespace: kserve-inference
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: fraud-detector
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fraud-detector-sa
+  namespace: kserve-inference
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fraud-detector-role
+  namespace: kserve-inference
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fraud-detector-rolebinding
+  namespace: kserve-inference
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: fraud-detector-role
+subjects:
+  - kind: ServiceAccount
+    name: fraud-detector-sa
+    namespace: kserve-inference
+
+---
+# Network policy to restrict traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fraud-detector-netpol
+  namespace: kserve-inference
+spec:
+  podSelector:
+    matchLabels:
+      app: fraud-detector
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow ingress from API Gateway
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 8001
+        - protocol: TCP
+          port: 8002
+    # Allow from same namespace (for monitoring)
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8002
+  egress:
+    # Allow to external services (S3, etc.)
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    # Allow DNS
+    - to:
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+
+---
+# ConfigMap for Triton model configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraud-detector-config
+  namespace: kserve-inference
+data:
+  model.conf: |
+    {
+      "model_name": "fraud_detector",
+      "platform": "onnxruntime_onnx",
+      "max_batch_size": 32,
+      "default_model_filename": "model.onnx",
+      "input": [
+        {
+          "name": "float_input",
+          "data_type": "TYPE_FP32",
+          "dims": [18]
+        }
+      ],
+      "output": [
+        {
+          "name": "variable",
+          "data_type": "TYPE_FP32",
+          "dims": [1]
+        }
+      ],
+      "dynamic_batching": {
+        "preferred_batch_size": [16, 32],
+        "max_queue_delay_microseconds": 5000
+      }
+    }
+
+---
+# Service for direct pod access (optional, for debugging)
+apiVersion: v1
+kind: Service
+metadata:
+  name: fraud-detector-svc
+  namespace: kserve-inference
+  labels:
+    app: fraud-detector
+spec:
+  type: ClusterIP
+  selector:
+    app: fraud-detector
+  ports:
+    - name: http-2
+      port: 8000
+      protocol: TCP
+    - name: metrics
+      port: 8002
+      protocol: TCP

@@ -1,0 +1,140 @@
+# Terraform Variables - Configuration File
+# Copy this to terraform.tfvars and modify values as needed
+# This is the modular production-grade configuration
+
+# ===== Basic Configuration =====
+
+aws_region = "us-west-2"
+project_name = "fraud-detection"
+environment  = "prod"
+
+# ===== VPC Configuration =====
+
+vpc_cidr = "10.0.0.0/16"
+
+public_subnet_cidrs = [
+  "10.0.1.0/24",   # AZ-1, Public
+  "10.0.2.0/24",   # AZ-2, Public
+  "10.0.3.0/24"    # AZ-3, Public
+]
+
+private_subnet_cidrs = [
+  "10.0.11.0/24",  # AZ-1, Private
+  "10.0.12.0/24",  # AZ-2, Private
+  "10.0.13.0/24"   # AZ-3, Private
+]
+
+enable_vpc_flow_logs = true
+enable_vpc_endpoints = true
+
+# ===== EKS Cluster Configuration =====
+
+kubernetes_version = "1.28"
+
+# API Endpoint Access
+endpoint_private_access = true
+endpoint_public_access  = true
+# Restrict public access to these CIDR blocks (use ["0.0.0.0/0"] for full access)
+public_access_cidrs = ["0.0.0.0/0"]
+
+# Control plane logging
+enabled_cluster_log_types = [
+  "api",
+  "audit",
+  "authenticator",
+  "controllerManager",
+  "scheduler"
+]
+log_retention_days = 7
+
+# ===== CPU Node Group Configuration =====
+
+cpu_instance_types = [
+  "t3.large",     # 2 vCPU, 8 GB RAM - Development
+  "t3.xlarge"     # 4 vCPU, 16 GB RAM - Production
+]
+
+cpu_desired_size = 3   # Start with 3 nodes
+cpu_min_size     = 1   # At least 1 node
+cpu_max_size     = 10  # Scale up to 10 nodes
+
+use_spot_instances = true  # Cost savings: ~70% cheaper
+
+# ===== GPU Node Group Configuration =====
+
+enable_gpu = true
+
+gpu_instance_types = [
+  "g4dn.xlarge",   # 4vCPU, 16GB RAM, 1x T4 GPU (~$0.52/hour)
+  "g4dn.2xlarge"   # 8vCPU, 32GB RAM, 1x T4 GPU (~$0.74/hour)
+]
+
+gpu_desired_size = 1   # Start with 1 GPU node
+gpu_min_size     = 0   # Scale down to 0 if unused
+gpu_max_size     = 5   # Scale up to 5 GPU nodes
+
+node_disk_size = 100  # 100 GB root volume
+
+# ===== Storage Configuration =====
+
+data_retention_days      = 90    # Days before old data versions are deleted
+model_retention_days     = 180   # Days before old model versions are deleted
+artifacts_retention_days = 60    # Days before old artifacts are deleted
+
+# ===== KServe (Model Serving) Configuration =====
+
+kserve_version = "0.10.0"
+
+# Triton predictor resources
+predictor_cpu_request    = "500m"   # Request 500 millicores
+predictor_cpu_limit      = "2"      # Limit to 2 cores
+predictor_memory_request = "1Gi"    # Request 1 GB
+predictor_memory_limit   = "4Gi"    # Limit to 4 GB
+predictor_gpu_limit      = 1        # 1 GPU per predictor pod
+
+# Horizontal Pod Autoscaler
+hpa_min_replicas   = 3    # Minimum pods
+hpa_max_replicas   = 10   # Maximum pods
+hpa_target_cpu     = 80   # Scale up if CPU > 80%
+hpa_target_memory  = 80   # Scale up if memory > 80%
+
+# ===== Karpenter (Node Autoscaling) Configuration =====
+
+karpenter_version = "v0.32.0"
+
+cpu_instance_types_karpenter = [
+  "t3.large",
+  "t3.xlarge",
+  "t3.2xlarge"
+]
+
+cpu_pool_max_cpu    = "1000"
+cpu_pool_max_memory = "1000Gi"
+
+gpu_pool_max_cpu    = "100"
+gpu_pool_max_memory = "500Gi"
+
+node_ttl_seconds = 2592000  # 30 days - nodes that haven't been used will be removed
+
+# ===== SageMaker Configuration =====
+
+enable_sagemaker = true  # Enable SageMaker for training
+
+# ===== Monitoring Configuration =====
+
+enable_monitoring = true  # Enable Prometheus and Grafana
+
+# ===== EKS Addon Versions =====
+
+vpc_cni_addon_version      = "v1.14.1-eksbuild.1"
+coredns_addon_version      = "v1.9.3-eksbuild.2"
+kube_proxy_addon_version   = "v1.28.1-eksbuild.1"
+ebs_csi_addon_version      = "v1.20.0-eksbuild.1"
+
+# ===== Cost Optimization Tips =====
+# 
+# 1. Reduce desired_size (e.g., cpu_desired_size = 1) for development
+# 2. Set enable_gpu = false if you don't need model inference
+# 3. Use use_spot_instances = true (default) for 70% cost savings
+# 4. Reduce karpenter cpu_pool_max_* to limit resource usage
+# 5. Set log_retention_days = 3 to reduce CloudWatch costs
