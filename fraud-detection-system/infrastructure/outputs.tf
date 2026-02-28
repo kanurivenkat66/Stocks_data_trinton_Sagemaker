@@ -156,10 +156,6 @@ output "kserve_service_account" {
   value       = module.kserve.kserve_service_account
 }
 
-output "inference_service_name" {
-  description = "KServe InferenceService name"
-  value       = module.kserve.inference_service_name
-}
 
 # ===== Karpenter Outputs =====
 
@@ -216,7 +212,6 @@ output "deployment_summary" {
       
     Model Serving:
       KServe Namespace: ${module.kserve.kserve_namespace}
-      Inference Service: ${module.kserve.inference_service_name}
       
     Auto-scaling:
       Karpenter Namespace: ${module.karpenter.karpenter_namespace}

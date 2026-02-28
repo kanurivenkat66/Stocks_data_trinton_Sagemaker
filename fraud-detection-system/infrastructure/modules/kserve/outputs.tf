@@ -15,12 +15,3 @@ output "knative_serving_namespace" {
   value       = kubernetes_namespace.knative_serving.metadata[0].name
 }
 
-output "inference_service_name" {
-  description = "Name of the InferenceService"
-  value       = kubernetes_manifest.triton_inference_service.manifest.metadata.name
-}
-
-output "hpa_name" {
-  description = "Name of the HorizontalPodAutoscaler"
-  value       = kubernetes_horizontal_pod_autoscaler_v2.kserve.metadata[0].name
-}
