@@ -90,3 +90,9 @@ variable "karpenter_helm_release_id" {
   type        = any
   default     = null
 }
+
+variable "cluster_exists" {
+  description = "Set to true after cluster is created so kubernetes_manifest resources are applied"
+  type        = bool
+  default     = false
+}

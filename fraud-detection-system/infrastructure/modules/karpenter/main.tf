@@ -33,6 +33,7 @@ resource "kubernetes_service_account" "karpenter" {
 
 # Karpenter NodePool for CPU workloads
 resource "kubernetes_manifest" "karpenter_cpu_nodepool" {
+  count = var.cluster_exists ? 1 : 0
   manifest = {
     apiVersion = "karpenter.sh/v1beta1"
     kind       = "NodePool"
@@ -84,7 +85,7 @@ resource "kubernetes_manifest" "karpenter_cpu_nodepool" {
 
 # Karpenter NodePool for GPU workloads
 resource "kubernetes_manifest" "karpenter_gpu_nodepool" {
-  count = var.enable_gpu_pool ? 1 : 0
+  count = var.cluster_exists && var.enable_gpu_pool ? 1 : 0
 
   manifest = {
     apiVersion = "karpenter.sh/v1beta1"
@@ -144,6 +145,7 @@ resource "kubernetes_manifest" "karpenter_gpu_nodepool" {
 
 # EC2NodeClass for resource configuration
 resource "kubernetes_manifest" "ec2_node_class" {
+  count = var.cluster_exists ? 1 : 0
   manifest = {
     apiVersion = "karpenter.k8s.aws/v1beta1"
     kind       = "EC2NodeClass"
