@@ -129,7 +129,7 @@ resource "helm_release" "karpenter" {
     yamlencode({
       serviceAccount = {
         annotations = {
-          "eks.amazonaws.com/role-arn" = module.iam.karpenter_role_arn
+          "eks.amazonaws.com/role-arn" = aws_iam_role.karpenter.arn
         }
       }
       settings = {
