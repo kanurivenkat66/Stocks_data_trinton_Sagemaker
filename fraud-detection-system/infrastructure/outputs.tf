@@ -215,8 +215,8 @@ output "deployment_summary" {
       
     Auto-scaling:
       Karpenter Namespace: ${module.karpenter.karpenter_namespace}
-      CPU Pool: ${module.karpenter.cpu_nodepool_name}
-      GPU Pool: ${module.karpenter.gpu_nodepool_name}
+      CPU Pool: ${coalesce(module.karpenter.cpu_nodepool_name, "pending")}
+      GPU Pool: ${coalesce(module.karpenter.gpu_nodepool_name, "pending")}
       
     To connect to the cluster:
       $ aws eks update-kubeconfig --region ${var.aws_region} --name ${module.eks.cluster_name}
