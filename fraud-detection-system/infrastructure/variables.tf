@@ -71,7 +71,7 @@ variable "enable_vpc_endpoints" {
 variable "kubernetes_version" {
   description = "Kubernetes version for EKS cluster"
   type        = string
-  default     = "1.28"
+  default     = "1.31"
 }
 
 variable "cpu_instance_types" {
@@ -341,23 +341,23 @@ variable "enable_monitoring" {
 variable "vpc_cni_addon_version" {
   description = "Version of VPC CNI addon"
   type        = string
-  default     = "v1.14.1-eksbuild.1"
+  default     = "v1.18.1-eksbuild.3"
 }
 
 variable "coredns_addon_version" {
   description = "Version of CoreDNS addon"
   type        = string
-  default     = "v1.9.3-eksbuild.2"
+  default     = "v1.11.3-eksbuild.1"
 }
 
 variable "kube_proxy_addon_version" {
   description = "Version of kube-proxy addon"
   type        = string
-  default     = "v1.28.1-eksbuild.1"
+  default     = "v1.31.2-eksbuild.3"
 }
 
 variable "ebs_csi_addon_version" {
   description = "Version of EBS CSI driver addon"
   type        = string
-  default     = "v1.20.0-eksbuild.1"
+  default     = "v1.38.1-eksbuild.2"
 }
