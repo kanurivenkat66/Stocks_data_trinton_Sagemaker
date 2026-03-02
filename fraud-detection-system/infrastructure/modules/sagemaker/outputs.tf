@@ -32,5 +32,5 @@ output "model_package_group_name" {
 
 output "model_package_group_arn" {
   description = "ARN of the model package group"
-  value       = try(aws_sagemaker_model_package_group.fraud_detection[0].model_package_group_arn, null)
+  value       = try(aws_sagemaker_model_package_group.fraud_detection[0].arn, null)
 }

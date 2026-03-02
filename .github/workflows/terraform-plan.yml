@@ -73,6 +73,24 @@ jobs:
               --region ${{ env.AWS_REGION }}
           fi
 
+      - name: Repair State Digest
+        run: |
+          BUCKET="fraud-detection-terraform-state-889526028446"
+          KEY="fraud-detection/terraform.tfstate"
+          LOCK_ID="${BUCKET}/${KEY}-md5"
+          ETAG=$(aws s3api head-object --bucket "$BUCKET" --key "$KEY" \
+            --query ETag --output text 2>/dev/null | tr -d '"')
+          if [ -n "$ETAG" ]; then
+            aws dynamodb put-item \
+              --table-name terraform-locks \
+              --region ${{ env.AWS_REGION }} \
+              --item "{\"LockID\":{\"S\":\"${LOCK_ID}\"},\"Digest\":{\"S\":\"${ETAG}\"}}" \
+              2>/dev/null || true
+            echo "State digest reconciled: $ETAG"
+          else
+            echo "State file not found — fresh deployment, no repair needed."
+          fi
+
       - name: Terraform Init
         id: init
         run: terraform init -input=false
