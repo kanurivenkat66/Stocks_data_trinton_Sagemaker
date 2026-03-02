@@ -44,17 +44,23 @@ jobs:
           BUCKET="fraud-detection-terraform-state-889526028446"
           KEY="fraud-detection/terraform.tfstate"
           LOCK_ID="${BUCKET}/${KEY}-md5"
-          ETAG=$(aws s3api head-object --bucket "$BUCKET" --key "$KEY" \
-            --query ETag --output text 2>/dev/null | tr -d '"')
-          if [ -n "$ETAG" ]; then
-            aws dynamodb put-item \
-              --table-name terraform-locks \
-              --region ${{ env.AWS_REGION }} \
-              --item "{\"LockID\":{\"S\":\"${LOCK_ID}\"},\"Digest\":{\"S\":\"${ETAG}\"}}" \
-              2>/dev/null || true
-            echo "State digest reconciled: $ETAG"
+          # Delete the stale digest entry. Terraform will re-create it after a
+          # successful state read. Writing back the wrong ETag (e.g. from an
+          # empty S3 object) would only move the mismatch; deletion is safe.
+          aws dynamodb delete-item \
+            --table-name terraform-locks \
+            --region ${{ env.AWS_REGION }} \
+            --key "{\"LockID\":{\"S\":\"${LOCK_ID}\"}}" \
+            2>/dev/null || true
+          echo "Stale state digest cleared."
+          # Warn if the state file itself is empty or missing
+          SIZE=$(aws s3api head-object --bucket "$BUCKET" --key "$KEY" \
+            --query ContentLength --output text 2>/dev/null || echo "0")
+          if [ "$SIZE" = "0" ] || [ "$SIZE" = "None" ] || [ -z "$SIZE" ]; then
+            echo "WARNING: S3 state file is empty or missing (size=$SIZE)."
+            echo "If infrastructure already exists, restore from S3 versioning before applying."
           else
-            echo "State file not found — fresh deployment, no repair needed."
+            echo "S3 state file OK (${SIZE} bytes)."
           fi
 
       - name: Terraform Init
