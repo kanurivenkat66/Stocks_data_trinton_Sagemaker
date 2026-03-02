@@ -221,22 +221,3 @@ jobs:
           path: /tmp/deployment-summary.md
           retention-days: 30
       
-      - name: Slack Notification
-        if: always()
-        uses: slackapi/slack-github-action@v1.24.0
-        with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          payload: |
-            {
-              "text": "${{ job.status == 'success' && '✅' || '❌' }} Model Deployment",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "${{ job.status == 'success' && '✅' || '❌' }} *Model Deployed to ${{ github.event.inputs.environment || 'staging' }}*\n*Model*: ${{ steps.model.outputs.version }}\n*Cluster*: ${{ steps.cluster.outputs.cluster_name }}\n*Status*: ${{ job.status }}"
-                  }
-                }
-              ]
-            }
-        continue-on-error: true

@@ -38,6 +38,7 @@ jobs:
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
       
       - name: Repair State Digest
         run: |
@@ -71,6 +72,23 @@ jobs:
         id: validate
         run: terraform validate
       
+      - name: Import Existing CloudWatch Log Groups
+        run: |
+          # Log groups may already exist in AWS from a previous deployment.
+          # Import them into state so Terraform doesn't try to re-create them.
+          import_if_missing() {
+            local ADDR="$1"
+            local ID="$2"
+            if ! terraform state show "$ADDR" >/dev/null 2>&1; then
+              echo "Importing $ADDR ($ID)..."
+              terraform import -input=false "$ADDR" "$ID" 2>&1 || echo "  (already managed or not found — continuing)"
+            else
+              echo "$ADDR already in state — skipping."
+            fi
+          }
+          import_if_missing "module.vpc.aws_cloudwatch_log_group.vpc_flow_logs[0]" "/aws/vpc/flow-logs/fraud-detection"
+          import_if_missing "module.eks.aws_cloudwatch_log_group.eks[0]"          "/aws/eks/fraud-detection-cluster/cluster"
+
       - name: Terraform Plan
         id: plan
         run: terraform plan -no-color -input=false -out=tfplan
@@ -103,46 +121,6 @@ jobs:
           echo "cluster_name=$(terraform output -raw eks_cluster_name)" >> $GITHUB_OUTPUT
           echo "data_bucket=$(terraform output -raw data_bucket_name)" >> $GITHUB_OUTPUT
           echo "models_bucket=$(terraform output -raw models_bucket_name)" >> $GITHUB_OUTPUT
-      
-      - name: Slack Notification Success
-        if: success()
-        uses: slackapi/slack-github-action@v1.24.0
-        with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          payload: |
-            {
-              "text": "🎉 Terraform Apply Successful!",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "✅ *Fraud Detection Infrastructure Deployed*\n*Cluster*: ${{ steps.outputs.outputs.cluster_name }}\n*Commit*: ${{ github.sha }}\n*Author*: ${{ github.actor }}"
-                  }
-                }
-              ]
-            }
-        continue-on-error: true
-      
-      - name: Slack Notification Failure
-        if: failure()
-        uses: slackapi/slack-github-action@v1.24.0
-        with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          payload: |
-            {
-              "text": "❌ Terraform Apply Failed!",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "⚠️ *Infrastructure Deployment Failed*\n*Commit*: ${{ github.sha }}\n*Author*: ${{ github.actor }}\n*See logs for details*"
-                  }
-                }
-              ]
-            }
-        continue-on-error: true
       
       - name: Exit on Apply Failure
         if: steps.apply.outcome == 'failure'

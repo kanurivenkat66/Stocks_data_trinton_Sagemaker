@@ -106,22 +106,3 @@ jobs:
           path: fraud-detection-system/data-pipeline/
           retention-days: 30
       
-      - name: Slack Notification
-        if: always()
-        uses: slackapi/slack-github-action@v1.24.0
-        with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          payload: |
-            {
-              "text": "${{ job.status == 'success' && '✅' || '❌' }} Data Pipeline",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "${{ job.status == 'success' && '✅' || '❌' }} *Data Pipeline ${{ job.status }}*\n*Samples*: ${{ github.event.inputs.num_samples || '100000' }}\n*Bucket*: ${{ steps.bucket.outputs.bucket_name }}"
-                  }
-                }
-              ]
-            }
-        continue-on-error: true

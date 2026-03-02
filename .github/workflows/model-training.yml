@@ -177,22 +177,3 @@ jobs:
           path: fraud-detection-system/training/model/
           retention-days: 30
       
-      - name: Slack Notification
-        if: always()
-        uses: slackapi/slack-github-action@v1.24.0
-        with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          payload: |
-            {
-              "text": "${{ job.status == 'success' && '✅' || '❌' }} Model Training",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "${{ job.status == 'success' && '✅' || '❌' }} *Model Training ${{ job.status }}*\n*Version*: ${{ steps.version.outputs.version }}\n*Type*: ${{ github.event.inputs.model_type || 'xgboost' }}\n*Commit*: `${{ github.sha }}`"
-                  }
-                }
-              ]
-            }
-        continue-on-error: true
