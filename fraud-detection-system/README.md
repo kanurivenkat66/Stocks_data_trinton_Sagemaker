@@ -115,14 +115,20 @@ fraud-detection-system/
 │   ├── model-registry.yaml             # Model storage & versioning
 │   └── inference-client.py             # Test inference client
 ├── infrastructure/
-│   ├── eks-cluster.tf                  # EKS cluster setup (Terraform)
-│   ├── sagemaker.tf                    # SageMaker resources
-│   ├── iam-roles.tf                    # IAM policies and roles
-│   ├── s3-buckets.tf                   # S3 bucket configuration
-│   ├── networking.tf                   # VPC, security groups
-│   ├── karpenter.tf                    # Karpenter autoscaler
-│   ├── kserve-setup.tf                 # KServe installation
-│   └── terraform.tfvars                # Configuration variables
+│   ├── main.tf                         # Root module - orchestrates all modules
+│   ├── variables.tf                    # Input variables
+│   ├── outputs.tf                      # Output values
+│   ├── provider.tf                     # Terraform and provider config
+│   ├── locals.tf                       # Local values and common tags
+│   ├── terraform.tfvars.example        # Example variable values
+│   └── modules/
+│       ├── vpc/                        # VPC, subnets, NAT gateway, security groups
+│       ├── iam/                        # IAM roles and policies (EKS, SageMaker, KServe)
+│       ├── eks/                        # EKS cluster and node groups (CPU + GPU)
+│       ├── storage/                    # S3 buckets (data, models, artifacts, logs)
+│       ├── karpenter/                  # Karpenter autoscaler (CPU + GPU NodePools)
+│       ├── kserve/                     # KServe model serving (InferenceService, HPA)
+│       └── sagemaker/                  # SageMaker Studio, Feature Store, Model Registry
 ├── monitoring/
 │   ├── prometheus-config.yaml          # Prometheus metrics scraping
 │   ├── grafana-dashboards.json         # Grafana dashboards

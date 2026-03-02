@@ -144,6 +144,31 @@ output "sagemaker_role_arn" {
   value       = module.iam.sagemaker_role_arn
 }
 
+# ===== SageMaker Outputs =====
+
+output "sagemaker_domain_id" {
+  description = "SageMaker Studio domain ID"
+  value       = module.sagemaker.domain_id
+}
+
+output "sagemaker_domain_url" {
+  description = "SageMaker Studio URL"
+  value       = module.sagemaker.domain_url
+}
+
+output "sagemaker_model_package_group_name" {
+  description = "Model package group name (model registry)"
+  value       = module.sagemaker.model_package_group_name
+}
+
+output "sagemaker_feature_groups" {
+  description = "SageMaker Feature Store group names"
+  value = {
+    transactions = module.sagemaker.transactions_feature_group_name
+    customers    = module.sagemaker.customers_feature_group_name
+  }
+}
+
 # ===== KServe Outputs =====
 
 output "kserve_namespace" {

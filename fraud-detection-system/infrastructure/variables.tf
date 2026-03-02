@@ -304,6 +304,30 @@ variable "enable_sagemaker" {
   default     = true
 }
 
+variable "enable_sagemaker_studio" {
+  description = "Enable SageMaker Studio domain"
+  type        = bool
+  default     = true
+}
+
+variable "sagemaker_studio_user_profiles" {
+  description = "List of Studio user profile names to create"
+  type        = list(string)
+  default     = ["data-scientist", "mlops-engineer"]
+}
+
+variable "enable_sagemaker_feature_store" {
+  description = "Enable SageMaker Feature Store feature groups"
+  type        = bool
+  default     = true
+}
+
+variable "enable_sagemaker_model_registry" {
+  description = "Enable SageMaker Model Package Group for model versioning"
+  type        = bool
+  default     = true
+}
+
 # ===== Monitoring Configuration =====
 
 variable "enable_monitoring" {

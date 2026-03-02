@@ -252,6 +252,27 @@ module "karpenter" {
   depends_on = [helm_release.karpenter]
 }
 
+# ===== SageMaker Module =====
+module "sagemaker" {
+  source = "./modules/sagemaker"
+
+  project_name            = var.project_name
+  environment             = var.environment
+  enabled                 = var.enable_sagemaker
+  execution_role_arn      = coalesce(module.iam.sagemaker_role_arn, "")
+  vpc_id                  = module.vpc.vpc_id
+  subnet_ids              = module.vpc.private_subnet_ids
+  vpc_security_group_ids  = [module.vpc.eks_nodes_security_group_id]
+  feature_store_s3_bucket = module.storage.data_bucket_id
+  common_tags             = local.common_tags
+  enable_studio           = var.enable_sagemaker_studio
+  studio_user_profiles    = var.sagemaker_studio_user_profiles
+  enable_feature_store    = var.enable_sagemaker_feature_store
+  enable_model_registry   = var.enable_sagemaker_model_registry
+
+  depends_on = [module.iam, module.vpc, module.storage]
+}
+
 # ===== IAM Policy Attachments for EKS =====
 
 resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
