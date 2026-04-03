@@ -8,7 +8,7 @@ on:
         required: false
         default: '100000'
   schedule:
-    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+     # Daily at 2 AM UTC
 
 permissions:
   id-token: write
